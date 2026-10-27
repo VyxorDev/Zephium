@@ -1,7 +1,7 @@
 # Initial extension release scope
 
-September 11, 2026. This is the working product scope from the current product
-scope. It replaces the earlier marketplace, curated-package
+September 11, 2026. This is the working product scope. It replaces the earlier
+marketplace, curated-package
 publication and per-version approval plans, which are no longer in scope.
 It describes the implementation target, not completed behavior. Existing
 security guarantees and persisted ownership records must be preserved through
