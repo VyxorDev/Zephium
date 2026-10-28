@@ -86,8 +86,9 @@ Its security-relevant deltas currently enforce these invariants:
   when download policy permits it, native context-menu and download handlers
   are installed, and `native_resource_save_handler` accepts it; the default
   dialog is suppressed and the native download broker owns its picker and path.
-  All other requests are cancelled before suppressing the dialog. A resource
-  handler panic denies.
+  Every request is cancelled before configuring dialog suppression, and only
+  an admitted save clears cancellation afterward. A suppression failure or
+  resource handler panic therefore leaves the request denied.
 - WebView2 and WebKitGTK page-driven close requests default to a no-op.
   Destroying Wry's child container/widget is an explicit builder policy for
   embedders that can also reconcile native and logical-view ownership; a page

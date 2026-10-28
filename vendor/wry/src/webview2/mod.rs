@@ -1692,6 +1692,7 @@ impl InnerWebView {
       webview25.add_SaveAsUIShowing(
         &SaveAsUIShowingEventHandler::create(Box::new(move |_, args| {
           if let Some(args) = args {
+            args.SetCancel(true)?;
             let document = gate.as_ref().is_some_and(|gate| gate.get());
             let resource = !document
               && resource_save.as_ref().is_some_and(|handler| {
@@ -1699,10 +1700,12 @@ impl InnerWebView {
                   .unwrap_or(false)
               });
             let allowed = document || resource;
-            args.SetCancel(!allowed)?;
             // Resource Save As enters DownloadStarting next. The broker owns
             // its picker and staging path; document Save As has a separate UI.
             args.SetSuppressDefaultDialog(!document)?;
+            if allowed {
+              args.SetCancel(false)?;
+            }
           }
           Ok(())
         })),

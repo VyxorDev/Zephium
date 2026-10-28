@@ -641,8 +641,14 @@ fn webview2_save_as_passes_only_while_the_browser_has_asked_for_one() {
         .next()
         .expect("a bounded SaveAsUIShowing handler");
     assert!(handler.contains("gate.as_ref().is_some_and(|gate| gate.get())"));
-    assert!(handler.contains("args.SetCancel(!allowed)?"));
-    assert!(!handler.contains("SetCancel(true)"));
+    let denied = handler.find("args.SetCancel(true)?").expect("deny first");
+    let suppressed = handler
+        .find("args.SetSuppressDefaultDialog(!document)?")
+        .expect("dialog policy is configured");
+    let admitted = handler
+        .find("if allowed {\n              args.SetCancel(false)?;")
+        .expect("only an admitted save can clear cancellation");
+    assert!(denied < suppressed && suppressed < admitted);
     assert!(handlers.next().is_none());
     // A view built without the gate (an agent view, a raw view) cannot open
     // one, and the gate is closed again when the dialog's call completes.
