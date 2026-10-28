@@ -57,6 +57,64 @@ fn default_startup_opens_a_new_tab_without_losing_or_loading_restored_pages() {
 }
 
 #[test]
+fn new_tab_startup_restores_split_views_when_a_member_is_selected() {
+    let store = Arc::new(FakeStore::default());
+    let (mut shell, _, screen) = setup_with(store.clone());
+    shell.handle(Command::Bootstrap);
+    let first = active_id(&screen);
+    navigate_and_commit(&mut shell, first, "example.com");
+    shell.handle(Command::Open);
+    let second = active_id(&screen);
+    navigate_and_commit(&mut shell, second, "github.com");
+    shell.handle(Command::SplitWith {
+        other: first,
+        axis: Axis::Row,
+    });
+    shell.persist();
+
+    let (mut restarted, engine, screen) = setup_with(store);
+    restarted.handle(Command::Bootstrap);
+    assert_ne!(active_id(&screen), second);
+    assert!(!restarted.items.tab(first).unwrap().has_view());
+    assert!(!restarted.items.tab(second).unwrap().has_view());
+    restarted.handle(Command::Activate(second));
+    let panes = engine.last_layout();
+    assert_eq!(panes.len(), 2);
+    assert!(panes.contains(&first.to_string()) && panes.contains(&second.to_string()));
+}
+
+#[test]
+fn new_tab_startup_at_the_item_limit_keeps_the_restored_active_tab() {
+    let store = Arc::new(FakeStore::default());
+    let (mut shell, _, screen) = setup_with(store.clone());
+    shell.handle(Command::Bootstrap);
+    let previous = active_id(&screen);
+    navigate_and_commit(&mut shell, previous, "example.com");
+    let space = shell.windows.focused().unwrap().space;
+    for _ in 1..zephium_core::session::MAX_SESSION_ITEMS {
+        assert!(shell.items.insert_unloaded_tab(
+            ItemId::generate(),
+            Placement::Space {
+                space,
+                section: SpaceSection::Today
+            },
+            url::Url::parse("https://example.com/").unwrap(),
+            "Example",
+        ));
+    }
+    shell.persist();
+
+    let (mut restarted, _, screen) = setup_with(store);
+    restarted.handle(Command::Bootstrap);
+    assert_eq!(active_id(&screen), previous);
+    assert_eq!(
+        last(&screen).tabs.len(),
+        zephium_core::session::MAX_SESSION_ITEMS
+    );
+    assert!(restarted.items.tab(previous).unwrap().has_view());
+}
+
+#[test]
 fn restart_preserves_ids_actives_and_splits() {
     let store = Arc::new(FakeStore::default());
     store

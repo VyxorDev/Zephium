@@ -296,7 +296,15 @@ impl Shell {
         };
         match restored {
             Some(item) => fx.extend(self.focus_tab(item)),
-            None => fx.extend(self.open_tab()),
+            None => {
+                if let Some((_, effects)) = self.open_tab_with_id() {
+                    fx.extend(effects);
+                } else if let Some(item) =
+                    active_item.or_else(|| self.today_tabs(space).first().copied())
+                {
+                    fx.extend(self.focus_tab(item));
+                }
+            }
         }
         // Restored/hibernated tabs may not create a native view and therefore
         // have no URL/load callback to trigger favicon hydration. Load the

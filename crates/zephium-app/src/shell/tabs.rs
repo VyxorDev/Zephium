@@ -235,7 +235,19 @@ impl Shell {
         self.residency.recent.retain(|r| *r != id);
         self.residency.recent.push(id);
         self.touch(id);
-        self.items.ensure_view(id)
+        let panes = self
+            .windows
+            .focused()
+            .and_then(|window| window.splits.as_ref())
+            .filter(|tree| tree.contains(id) && self.pane_in_scope(tree, profile, space))
+            .map(|tree| tree.tabs())
+            .unwrap_or_default();
+        let mut effects = self.items.ensure_view(id);
+        for pane in panes.into_iter().filter(|pane| *pane != id) {
+            self.touch(pane);
+            effects.extend(self.items.ensure_view(pane));
+        }
+        effects
     }
 
     pub(super) fn close(&mut self, id: ItemId) -> NativeWork {
