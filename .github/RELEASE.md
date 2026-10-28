@@ -185,6 +185,17 @@ all three configuration values are absent. Partial configuration fails the relea
 drafts remain explicitly labelled unsigned
 while setup is pending. No secret belongs in an untrusted PR job.
 
+If the repository already holds a shared `SIGNPATH_API_TOKEN` for signing tests,
+an owner may explicitly set Actions variable `SIGNPATH_RELEASE_MODE` to `unsigned`
+while waiting for the production certificate. This keeps Windows drafts unsigned
+without removing the test token. It is allowed only while
+`SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_SIGNER_SUBJECT` and the forthcoming
+`SIGNPATH_RELEASE_CERT_THUMBPRINT` are absent. Remove the
+variable before configuring production signing; a stale unsigned mode alongside
+any production setting fails the release. macOS signing and updater signatures
+remain mandatory in this mode. With the variable unset, partial configuration
+still fails rather than silently producing unsigned Windows assets.
+
 The owner creates these exact SignPath resources:
 
 - Project slug **`zephium`**, linked to the public

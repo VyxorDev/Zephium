@@ -73,6 +73,8 @@ jobs:
       - name: Assess Windows publisher signing configuration
         id: signpath
         env:
+          SIGNPATH_RELEASE_MODE: ${{ vars.SIGNPATH_RELEASE_MODE }}
+          SIGNPATH_RELEASE_CERT_THUMBPRINT: ${{ vars.SIGNPATH_RELEASE_CERT_THUMBPRINT }}
           SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
           SIGNPATH_ORGANIZATION_ID: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
           SIGNPATH_SIGNER_SUBJECT: ${{ vars.SIGNPATH_SIGNER_SUBJECT }}
