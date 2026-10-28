@@ -21,8 +21,8 @@ configured=0
 for name in SIGNPATH_API_TOKEN SIGNPATH_ORGANIZATION_ID SIGNPATH_SIGNER_SUBJECT; do
   [[ -z "${!name:-}" ]] || configured=$((configured + 1))
 done
-if (( configured != 0 && configured != 3 )); then
-  echo '::error::Complete the SignPath configuration in .github/RELEASE.md or leave all three values unset.'
+if (( configured != 3 )) && { (( configured != 0 )) || [[ -n "${SIGNPATH_RELEASE_CERT_THUMBPRINT:-}" ]]; }; then
+  echo '::error::Complete the SignPath configuration in .github/RELEASE.md or leave all signing values unset.'
   exit 1
 fi
 if (( configured == 3 )); then

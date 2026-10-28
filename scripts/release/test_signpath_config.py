@@ -60,13 +60,21 @@ class SignPathConfigurationTests(unittest.TestCase):
         self.assertIn('inactive', message)
 
     def test_partial_configuration_never_silently_ships_unsigned(self):
-        for key in KEYS:
+        for key in (*KEYS, PRODUCTION_KEYS[-1]):
             status, output, _ = self.run_config({key: 'fixture'})
             self.assertNotEqual(status, 0)
             self.assertEqual(output, '')
 
     def test_complete_configuration_activates_without_disclosing_values(self):
         status, output, message = self.run_config({key: 'private-fixture' for key in KEYS})
+        self.assertEqual(status, 0)
+        self.assertEqual(output, 'enabled=true\n')
+        self.assertNotIn('private-fixture', message)
+
+    def test_complete_configuration_accepts_optional_thumbprint(self):
+        status, output, message = self.run_config({
+            key: 'private-fixture' for key in (*KEYS, PRODUCTION_KEYS[-1])
+        })
         self.assertEqual(status, 0)
         self.assertEqual(output, 'enabled=true\n')
         self.assertNotIn('private-fixture', message)
