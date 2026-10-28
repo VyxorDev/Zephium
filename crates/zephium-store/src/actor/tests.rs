@@ -1971,6 +1971,8 @@ fn page_icons_travel_the_actor_like_origin_icons() {
         sheet.clone(),
     );
 
+    assert!(store.flush());
+
     assert_eq!(
         store.favicon_rasters(profile, &[origin.to_owned(), page.to_owned()]),
         vec![
