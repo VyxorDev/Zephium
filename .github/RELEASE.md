@@ -68,6 +68,14 @@ existing install on its current version.
      assets/blocker-seed/v1/compile-report.json
    ```
 
+   Update the pinned revision, source bytes, manifest digest and rule counts in
+   `desktop/src/blocker_service.rs` from the refreshed catalog and compile report,
+   then verify the production loader and worker:
+
+   ```sh
+   cargo test -p zephium-desktop --lib --locked blocker_service::tests
+   ```
+
 2. **Bump the version** in `desktop/Cargo.toml` (`[package] version`, e.g.
    `1.0.0-beta.1`). It is the only version source: `tauri.conf.json` has none.
    Run `cargo check -p zephium-desktop` so `Cargo.lock` follows.
