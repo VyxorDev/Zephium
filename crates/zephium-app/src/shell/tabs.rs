@@ -70,7 +70,7 @@ impl Default for TabPreferences {
             after_close: AfterClose::default(),
             switch_to_open: true,
             automatic_pip: true,
-            start_with_new_tab: false,
+            start_with_new_tab: true,
             start_with_pages: false,
             startup_pages: Vec::new(),
             home: None,

@@ -276,8 +276,7 @@ impl Shell {
         let pages = self.tab_preferences.opens_pages() && self.pending_external.is_empty();
         let start_fresh = (self.tab_preferences.start_with_new_tab || pages)
             && self.pending_external.is_empty()
-            && active_item
-                .is_some_and(|id| self.items.tab(id).is_some_and(|tab| tab.url.is_some()));
+            && active_item.is_none_or(|id| self.items.tab(id).is_some_and(|tab| tab.url.is_some()));
         let mut fx = Vec::new();
         if let Some(tree) = splits {
             if !start_fresh {
