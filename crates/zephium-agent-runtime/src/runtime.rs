@@ -1859,6 +1859,7 @@ async fn worker_loop(
         }
     }
     drop(browser);
+    gate.stop();
     #[cfg(test)]
     WORKER_EXIT_GATE.wait();
     inner.completion.mark_stopped();
@@ -3853,6 +3854,14 @@ mod tests {
     #[test]
     fn lifecycle_shutdown_forcibly_drops_noncooperative_controller() {
         let _guard = runtime_test_guard();
+        struct ReleasePostCompletion;
+        impl Drop for ReleasePostCompletion {
+            fn drop(&mut self) {
+                WORKER_POST_COMPLETION_GATE.release();
+            }
+        }
+        WORKER_POST_COMPLETION_GATE.hold();
+        let post_completion = ReleasePostCompletion;
         let worker_exit_gate = HeldWorkerExitGate::enable();
         let (started_sender, started_receiver) = mpsc::channel();
         let pending = spawn_suspended_with_controller(
@@ -3892,6 +3901,7 @@ mod tests {
             Some(AgentRuntimeMailboxFault::Closed)
         );
         assert!(weak_port.upgrade().is_none());
+        drop(post_completion);
         let next = spawn_after_true_worker_exit();
         drop(next);
     }
