@@ -68,6 +68,14 @@ existing install on its current version.
      assets/blocker-seed/v1/compile-report.json
    ```
 
+   Update the pinned revision, source bytes, manifest digest and rule counts in
+   `desktop/src/blocker_service.rs` from the refreshed catalog and compile report,
+   then verify the production loader and worker:
+
+   ```sh
+   cargo test -p zephium-desktop --lib --locked blocker_service::tests
+   ```
+
 2. **Bump the version** in `desktop/Cargo.toml` (`[package] version`, e.g.
    `1.0.0-beta.1`). It is the only version source: `tauri.conf.json` has none.
    Run `cargo check -p zephium-desktop` so `Cargo.lock` follows.
@@ -184,6 +192,17 @@ issued and the owner completes the setup below. No signing request is sent while
 all three configuration values are absent. Partial configuration fails the release;
 drafts remain explicitly labelled unsigned
 while setup is pending. No secret belongs in an untrusted PR job.
+
+If the repository already holds a shared `SIGNPATH_API_TOKEN` for signing tests,
+an owner may explicitly set Actions variable `SIGNPATH_RELEASE_MODE` to `unsigned`
+while waiting for the production certificate. This keeps Windows drafts unsigned
+without removing the test token. It is allowed only while
+`SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_SIGNER_SUBJECT` and the forthcoming
+`SIGNPATH_RELEASE_CERT_THUMBPRINT` are absent. Remove the
+variable before configuring production signing; a stale unsigned mode alongside
+any production setting fails the release. macOS signing and updater signatures
+remain mandatory in this mode. With the variable unset, partial configuration
+still fails rather than silently producing unsigned Windows assets.
 
 The owner creates these exact SignPath resources:
 

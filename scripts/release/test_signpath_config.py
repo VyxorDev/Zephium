@@ -7,6 +7,8 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 KEYS = ('SIGNPATH_API_TOKEN', 'SIGNPATH_ORGANIZATION_ID', 'SIGNPATH_SIGNER_SUBJECT')
+MODE = 'SIGNPATH_RELEASE_MODE'
+PRODUCTION_KEYS = (*KEYS[1:], 'SIGNPATH_RELEASE_CERT_THUMBPRINT')
 
 
 class SignPathConfigurationTests(unittest.TestCase):
@@ -45,7 +47,7 @@ class SignPathConfigurationTests(unittest.TestCase):
     def run_config(self, configured):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'output'
-            env = {k: v for k, v in os.environ.items() if k not in KEYS}
+            env = {k: v for k, v in os.environ.items() if k not in (*KEYS, *PRODUCTION_KEYS, MODE)}
             env.update(configured, GITHUB_OUTPUT=str(output))
             result = subprocess.run(['bash', str(ROOT / 'scripts/release/signpath_config.sh')],
                                     env=env, capture_output=True, text=True)
@@ -58,7 +60,7 @@ class SignPathConfigurationTests(unittest.TestCase):
         self.assertIn('inactive', message)
 
     def test_partial_configuration_never_silently_ships_unsigned(self):
-        for key in KEYS:
+        for key in (*KEYS, PRODUCTION_KEYS[-1]):
             status, output, _ = self.run_config({key: 'fixture'})
             self.assertNotEqual(status, 0)
             self.assertEqual(output, '')
@@ -68,6 +70,32 @@ class SignPathConfigurationTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(output, 'enabled=true\n')
         self.assertNotIn('private-fixture', message)
+
+    def test_complete_configuration_accepts_optional_thumbprint(self):
+        status, output, message = self.run_config({
+            key: 'private-fixture' for key in (*KEYS, PRODUCTION_KEYS[-1])
+        })
+        self.assertEqual(status, 0)
+        self.assertEqual(output, 'enabled=true\n')
+        self.assertNotIn('private-fixture', message)
+
+    def test_explicit_unsigned_mode_keeps_the_shared_test_token_inactive(self):
+        status, output, message = self.run_config({MODE: 'unsigned', KEYS[0]: 'private-fixture'})
+        self.assertEqual(status, 0)
+        self.assertEqual(output, 'enabled=false\n')
+        self.assertIn('explicitly unsigned', message)
+        self.assertNotIn('private-fixture', message)
+
+    def test_unsigned_mode_cannot_override_production_configuration(self):
+        for key in PRODUCTION_KEYS:
+            status, output, _ = self.run_config({MODE: 'unsigned', key: 'fixture'})
+            self.assertNotEqual(status, 0)
+            self.assertEqual(output, '')
+
+    def test_unknown_mode_fails_closed(self):
+        status, output, _ = self.run_config({MODE: 'unsigend'})
+        self.assertNotEqual(status, 0)
+        self.assertEqual(output, '')
 
 
 if __name__ == '__main__': unittest.main()
