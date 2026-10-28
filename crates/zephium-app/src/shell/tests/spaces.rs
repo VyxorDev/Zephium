@@ -572,7 +572,7 @@ fn essentials_stay_with_their_space_across_a_restart() {
 }
 
 #[test]
-fn imported_essentials_land_in_the_space_on_screen() {
+fn imported_essentials_keep_the_admitted_space_after_switching() {
     let (mut shell, _engine, _screen, _store) = browsed();
     let home = current(&shell);
     let studio = create(&mut shell, "Studio", SpaceLook::default());
@@ -581,7 +581,10 @@ fn imported_essentials_land_in_the_space_on_screen() {
         title: url.into(),
     };
 
+    let destination = shell.import_destination().unwrap();
+    space_op(&mut shell, SpaceCommand::Switch(home));
     shell.handle(Command::Import {
+        destination,
         work: Box::new(crate::ImportWork::Essentials(vec![
             site("https://mail.example/"),
             site("https://board.example/"),

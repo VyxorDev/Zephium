@@ -117,6 +117,10 @@ pub struct Hub {
     legacy_state_purged: bool,
     /// The session this Hub last committed, to skip rewriting an identical one.
     committed_session: Option<String>,
+    /// Exact source bytes awaiting a backup before canonical state replaces them.
+    pending_session_backup: Option<session::SessionBackupSource>,
+    session_backup_checkpoint_pending: bool,
+    session_backup_expiry: Option<session::SessionBackupExpiry>,
     recovery_required: Option<String>,
     /// One unpredictable token shared by every Hub constructed in this
     /// process. A completed Windows unlink may be reconciled only by a Hub
@@ -209,6 +213,9 @@ impl Hub {
             visits_since_prune: HashMap::new(),
             legacy_state_purged: false,
             committed_session: None,
+            pending_session_backup: None,
+            session_backup_checkpoint_pending: false,
+            session_backup_expiry: None,
             recovery_required,
             deletion_process_generation,
             #[cfg(test)]
@@ -220,6 +227,9 @@ impl Hub {
             #[cfg(test)]
             ambiguous_time_commit_once: false,
         };
+        if let Err(error) = hub.arm_session_backup_expiry() {
+            eprintln!("store: session backup expiration deferred: {error}");
+        }
         hub.load_registry()?;
         let _ = hub.recover_liftable_quarantine()?;
         // The snapshot and registry must agree before profile files are
@@ -325,6 +335,9 @@ impl Hub {
             visits_since_prune: HashMap::new(),
             legacy_state_purged: false,
             committed_session: None,
+            pending_session_backup: None,
+            session_backup_checkpoint_pending: false,
+            session_backup_expiry: None,
             recovery_required: None,
             deletion_process_generation: deletion_process_generation(),
             #[cfg(test)]

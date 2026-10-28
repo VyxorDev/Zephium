@@ -779,7 +779,9 @@ fn an_essential_never_opened_is_given_its_icon_from_the_store_or_the_network() {
         url: url.into(),
         title: String::new(),
     };
+    let destination = shell.import_destination().unwrap();
     shell.handle(Command::Import {
+        destination,
         work: Box::new(crate::ImportWork::Essentials(vec![
             site("https://kept.example/inbox"),
             site("https://bare.example/"),

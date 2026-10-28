@@ -563,7 +563,9 @@ fn closing_an_essential_ends_its_page_and_keeps_it_in_place() {
         url: url.into(),
         title: url.into(),
     };
+    let destination = shell.import_destination().unwrap();
     shell.handle(Command::Import {
+        destination,
         work: Box::new(crate::ImportWork::Essentials(vec![
             site("https://mail.example/"),
             site("https://board.example/"),
