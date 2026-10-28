@@ -1,10 +1,60 @@
 import { afterEach, expect, test } from "vitest";
 import { render } from "vitest-browser-svelte";
+import { page } from "vitest/browser";
 import "$styles/global.css";
 import { browserImport, type ImportAdapter, type ImportJob } from "$domain/browser-import";
 import Import from "../components/steps/Import.svelte";
 
 afterEach(() => browserImport.provide(null));
+
+test("new import browsers render their own loaded artwork in both themes", async () => {
+  const browsers = [
+    ["helium", "Helium"],
+    ["dia", "Dia"],
+    ["comet", "Comet"],
+    ["chromium", "Chromium"],
+    ["floorp", "Floorp"],
+    ["librewolf", "LibreWolf"],
+    ["waterfox", "Waterfox"],
+    ["opera-gx", "Opera GX"],
+  ] as const;
+  const fake = importer();
+  fake.adapter.sources = async () =>
+    browsers.map(([id, name]) => ({
+      id,
+      browser: id,
+      name,
+      profiles: [{ id: "Default", name: "Personal" }],
+      kinds: ["bookmarks", "history"],
+      needsPermission: false,
+      running: false,
+    }));
+  browserImport.provide(fake.adapter);
+  await browserImport.detect();
+  const screen = await render(Import);
+  await page.viewport(600, 760);
+  try {
+    for (const theme of ["light", "dark"]) {
+      document.documentElement.dataset.theme = theme;
+      for (const [, name] of browsers) {
+        const choice = screen.getByRole("radio", { name, exact: true });
+        await expect.element(choice).toBeVisible();
+        await expect
+          .poll(() => {
+            const image = choice.element().querySelector("img");
+            return image?.complete && image.naturalWidth > 0;
+          })
+          .toBe(true);
+      }
+      await Promise.all(
+        document.getAnimations().map((animation) => animation.finished.catch(() => {})),
+      );
+      await page.screenshot({ path: `../../../../../target/onboarding/import-marks-${theme}.png` });
+    }
+  } finally {
+    delete document.documentElement.dataset.theme;
+  }
+});
 
 function importer() {
   let emit: (job: ImportJob) => void = () => {};
