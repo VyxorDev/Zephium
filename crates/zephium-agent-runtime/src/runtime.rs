@@ -1650,9 +1650,9 @@ impl Drop for RuntimeLifecycle {
         // that worker, but this remains Unclean: only a later controller can
         // establish the native-zero audit proof required to claim a clean
         // browser shutdown.
-        self.inner
-            .request_cooperative_shutdown_until(Instant::now());
         if let Some(worker) = self.worker.take() {
+            self.inner
+                .request_cooperative_shutdown_until(Instant::now());
             schedule_reap(worker);
         }
     }
@@ -3577,6 +3577,18 @@ mod tests {
         ));
         let next = spawn_after_true_worker_exit();
         drop(next);
+    }
+
+    #[test]
+    fn dropping_a_reaped_lifecycle_preserves_its_published_deadline() {
+        let inner = controller_test_inner();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        inner.request_cooperative_shutdown_until(deadline);
+        drop(RuntimeLifecycle {
+            inner: Arc::clone(&inner),
+            worker: None,
+        });
+        assert_eq!(inner.shutdown_deadline(), Some(deadline));
     }
 
     #[test]
