@@ -528,6 +528,15 @@ export const commands = {
 	launcherSearch: (query: string, requestId: string) => __TAURI_INVOKE<boolean>("launcher_search", { query, requestId }),
 	launcherRun: (action: SearchAction, context: SearchContext, background: boolean) => __TAURI_INVOKE<OperationAdmission>("launcher_run", { action, context, background }),
 	sidebarSetWidth: (width: number | null, animate: boolean, revision: number | null) => __TAURI_INVOKE<void>("sidebar_set_width", { width, animate, revision }),
+	/**  Puts the sidebar away, the page taking the window, or brings it back. */
+	sidebarSetHidden: (hidden: boolean) => __TAURI_INVOKE<void>("sidebar_set_hidden", { hidden }),
+	/**
+	 *  Brings a hidden sidebar over the page while the pointer wants it, or puts
+	 *  it back beneath. The window controls show with the card, and leave the
+	 *  moment it starts to go rather than once it has. `slide` has a platform that
+	 *  cuts the chrome to the card follow it in and out.
+	 */
+	sidebarPeek: (peek: boolean, lights: boolean, slide: boolean) => __TAURI_INVOKE<void>("sidebar_peek", { peek, lights, slide }),
 	sidebarResize: (width: number | null, enabled: boolean, revision: number | null) => __TAURI_INVOKE<boolean>("sidebar_resize", { width, enabled, revision }),
 	sidebarResizeGuide: (width: number | null) => __TAURI_INVOKE<boolean>("sidebar_resize_guide", { width }),
 	tabDragOver: (x: number | null, y: number | null) => __TAURI_INVOKE<void>("tab_drag_over", { x, y }),

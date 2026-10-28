@@ -5,10 +5,10 @@ fn onboarding(store: &FakeStore) -> Option<String> {
 }
 
 fn kept(shell: &Shell) -> Vec<(ItemId, String)> {
-    let profile = shell.windows.focused().unwrap().profile;
+    let space = shell.windows.focused().unwrap().space;
     shell
         .items
-        .roots(Placement::Favorites { profile })
+        .roots(Placement::Favorites { space })
         .iter()
         .map(|id| {
             let url = shell.items.tab(*id).unwrap().url.as_ref().unwrap();
@@ -128,6 +128,37 @@ fn a_catalog_site_is_kept_unloaded_with_its_mark_and_only_once() {
 }
 
 #[test]
+fn a_kept_site_belongs_to_the_space_it_was_kept_in() {
+    let (mut shell, _engine, _screen) = setup();
+    shell.handle(Command::Bootstrap);
+    let home = shell.windows.focused().unwrap().space;
+    shell.handle_operation(Command::KeepSite("slack".into()));
+    assert_eq!(kept(&shell).len(), 1);
+
+    shell.handle_operation(Command::Space(Box::new(crate::SpaceCommand::Create {
+        name: "Studio".into(),
+        look: Default::default(),
+    })));
+    assert_ne!(shell.windows.focused().unwrap().space, home);
+    assert!(kept(&shell).is_empty());
+
+    // The same site may be kept again here, and letting it go here leaves
+    // the other space's alone.
+    let here = shell.handle_operation(Command::KeepSite("slack".into()));
+    assert_ne!(here.outcome, OperationOutcome::NoOp);
+    assert_eq!(kept(&shell).len(), 1);
+    shell.handle_operation(Command::ReleaseSite("slack".into()));
+    assert!(kept(&shell).is_empty());
+    assert_eq!(
+        shell
+            .items
+            .roots(Placement::Favorites { space: home })
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn a_kept_site_is_let_go_whole_where_closing_would_keep_it() {
     let (mut shell, _engine, _screen) = setup();
     shell.handle(Command::Bootstrap);
@@ -232,9 +263,9 @@ fn essentials_from_another_browser_join_the_kept_sites_once_each_unloaded() {
         title: title.into(),
     };
     let (send, receive) = std::sync::mpsc::channel();
-    let profile = shell.windows.focused().unwrap().profile;
+    let destination = shell.import_destination().unwrap();
     shell.handle(Command::Import {
-        profile,
+        destination,
         work: Box::new(crate::ImportWork::Essentials(vec![
             site("https://mail.example/", "Mail"),
             site("https://mail.example/", "Mail again"),
@@ -277,10 +308,10 @@ fn data_safety_import_retains_its_admitted_profile_across_focus_changes() {
     });
     let admitted = receive.recv().unwrap().unwrap();
     let other = add_inactive_named_profile(&mut shell, 89_000);
-    for (index, focused) in [admitted, other].into_iter().enumerate() {
+    for (index, focused) in [admitted.profile, other].into_iter().enumerate() {
         shell.windows.focused_mut().unwrap().profile = focused;
         shell.handle(Command::Import {
-            profile: admitted,
+            destination: admitted,
             work: Box::new(crate::ImportWork::Essentials(vec![crate::ImportedSite {
                 url: format!("https://kind{index}.example/"),
                 title: "Imported".into(),
@@ -291,13 +322,22 @@ fn data_safety_import_retains_its_admitted_profile_across_focus_changes() {
     assert_eq!(
         shell
             .items
-            .roots(Placement::Favorites { profile: admitted })
+            .roots(Placement::Favorites {
+                space: admitted.space
+            })
             .len(),
         2
     );
     assert!(shell
         .items
-        .roots(Placement::Favorites { profile: other })
+        .roots(Placement::Favorites {
+            space: shell
+                .spaces
+                .iter()
+                .find(|space| space.profile == other)
+                .unwrap()
+                .id
+        })
         .is_empty());
 }
 
@@ -306,10 +346,19 @@ fn import_rejects_private_and_removed_destinations_without_retargeting() {
     let (mut shell, _engine, _screen) = setup();
     shell.handle(Command::Bootstrap);
     let destination = add_inactive_named_profile(&mut shell, 89_200);
-    shell.profiles.remove(destination);
+    let destination = crate::ImportDestination {
+        profile: destination,
+        space: shell
+            .spaces
+            .iter()
+            .find(|space| space.profile == destination)
+            .unwrap()
+            .id,
+    };
+    shell.profiles.remove(destination.profile);
     let (send, receive) = std::sync::mpsc::channel();
     shell.handle(Command::Import {
-        profile: destination,
+        destination,
         work: Box::new(crate::ImportWork::Essentials(vec![])),
         done: crate::ImportCompletion::new(move |added| {
             send.send(added).unwrap();
@@ -360,9 +409,13 @@ fn all_queued_import_kinds_and_icons_keep_one_destination_after_focus_moves() {
     ];
     // Source reads may finish after focus changes between any pair of kinds.
     for (index, work) in work.into_iter().enumerate() {
-        shell.windows.focused_mut().unwrap().profile = if index == 0 { destination } else { other };
+        shell.windows.focused_mut().unwrap().profile = if index == 0 {
+            destination.profile
+        } else {
+            other
+        };
         shell.handle(Command::Import {
-            profile: destination,
+            destination,
             work: Box::new(work),
             done: crate::ImportCompletion::new(|added| assert!(added.is_some())),
         });
@@ -386,14 +439,14 @@ fn all_queued_import_kinds_and_icons_keep_one_destination_after_focus_moves() {
         shell.handle(Command::StoreRead(result));
     }
     assert!(
-        matches!(store.bookmarks(destination, BookmarkRequest::All), BookmarkReply::Nodes(nodes) if !nodes.is_empty())
+        matches!(store.bookmarks(destination.profile, BookmarkRequest::All), BookmarkReply::Nodes(nodes) if !nodes.is_empty())
     );
     assert!(
         matches!(store.bookmarks(other, BookmarkRequest::All), BookmarkReply::Nodes(nodes) if nodes.is_empty())
     );
     assert_eq!(
         store
-            .history_page_checked(destination, "", None, None, 10)
+            .history_page_checked(destination.profile, "", None, None, 10)
             .unwrap()
             .len(),
         1
@@ -403,7 +456,7 @@ fn all_queued_import_kinds_and_icons_keep_one_destination_after_focus_moves() {
         .unwrap()
         .is_empty());
     assert!(store
-        .favicon_raster_with_age(destination, "https://import.example")
+        .favicon_raster_with_age(destination.profile, "https://import.example")
         .is_some());
     assert!(store
         .favicon_raster_with_age(other, "https://import.example")

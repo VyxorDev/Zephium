@@ -226,28 +226,43 @@ impl Shell {
         views
     }
 
-    pub(super) fn import_destination(&mut self) -> Option<ProfileId> {
+    pub(super) fn import_destination(&mut self) -> Option<crate::ImportDestination> {
         if !self.bootstrapped {
             self.bootstrap();
         }
         self.windows
             .focused()
-            .map(|window| window.profile)
-            .filter(|profile| self.bookmarks_writable(*profile))
+            .map(|window| crate::ImportDestination {
+                profile: window.profile,
+                space: window.space,
+            })
+            .filter(|destination| {
+                self.bookmarks_writable(destination.profile)
+                    && self
+                        .spaces
+                        .get(destination.space)
+                        .is_some_and(|space| space.profile == destination.profile)
+            })
     }
 
     pub(super) fn import_into_profile(
         &mut self,
-        profile: ProfileId,
+        destination: crate::ImportDestination,
         work: ImportWork,
         done: ImportCompletion,
     ) {
-        if !self.bookmarks_writable(profile) {
+        let crate::ImportDestination { profile, space } = destination;
+        if !self.bookmarks_writable(profile)
+            || self
+                .spaces
+                .get(space)
+                .is_none_or(|space| space.profile != profile)
+        {
             done.finish(None);
             return;
         }
         if let ImportWork::Essentials(sites) = work {
-            done.finish(Some(self.keep_imported_sites(profile, sites)));
+            done.finish(Some(self.keep_imported_sites(space, sites)));
             return;
         }
         if self.bookmarks.imports.len() >= MAX_PENDING_BOOKMARK_CALLS {

@@ -53,7 +53,7 @@ use zephium_core::session::{
     MAX_SESSION_NAME_CHARS, MAX_SESSION_PROFILES, MAX_SESSION_SPACES,
 };
 
-use crate::{bounded_json, migrations};
+use crate::{bounded_json, essentials, migrations};
 
 pub(crate) use agent_audit::{AgentAuditAppendOutcome, MAX_DURABLE_AGENT_AUDIT_EVENTS};
 #[cfg(all(
@@ -84,7 +84,9 @@ use filesystem::{
     profile_artifacts_exist, regular_file_exists,
 };
 
-const SESSION_SCHEMA_VERSION: i64 = 1;
+/// 2 gave every space its own Essentials. A session saved as 1 holds one set
+/// per profile; reading it copies that set into each of the profile's spaces.
+const SESSION_SCHEMA_VERSION: i64 = 2;
 pub(crate) const MAX_SESSION_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAX_URL_BYTES: usize = 8 * 1024;
 pub(crate) const MAX_TITLE_BYTES: usize = zephium_core::item::MAX_PAGE_TITLE_CHARS * 4;
@@ -116,7 +118,7 @@ pub struct Hub {
     /// The session this Hub last committed, to skip rewriting an identical one.
     committed_session: Option<String>,
     /// Exact source bytes awaiting a backup before canonical state replaces them.
-    pending_session_backup: Option<Vec<u8>>,
+    pending_session_backup: Option<session::SessionBackupSource>,
     session_backup_checkpoint_pending: bool,
     session_backup_expiry: Option<session::SessionBackupExpiry>,
     recovery_required: Option<String>,
@@ -229,7 +231,7 @@ impl Hub {
             eprintln!("store: session backup expiration deferred: {error}");
         }
         hub.load_registry()?;
-        let _ = hub.recover_canonical_form_quarantine()?;
+        let _ = hub.recover_liftable_quarantine()?;
         // The snapshot and registry must agree before profile files are
         // migrated, purged, or reconciled. A corrupt authoritative row must
         // fail startup without destroying the only recoverable profile data.

@@ -269,7 +269,7 @@ async fn run(
     app: &tauri::AppHandle,
     browser: Browser,
     profile: String,
-    destination: zephium_core::ids::ProfileId,
+    destination: zephium_app::ImportDestination,
     kinds: Vec<ImportKindView>,
     cancelled: Arc<AtomicBool>,
 ) {
@@ -406,7 +406,7 @@ async fn import_icons(
     app: &tauri::AppHandle,
     browser: Browser,
     profile: &str,
-    destination: zephium_core::ids::ProfileId,
+    destination: zephium_app::ImportDestination,
     wanted: Vec<String>,
 ) {
     if wanted.is_empty() {
@@ -443,10 +443,7 @@ async fn read(
     tauri::async_runtime::spawn_blocking(move || {
         let locations = Locations::from_env().ok_or(ImportError::Missing)?;
         // Discovery again: only a profile this source lists right now is read.
-        let source = zephium_import::discover(&locations)
-            .into_iter()
-            .find(|source| source.browser == browser)
-            .ok_or(ImportError::Missing)?;
+        let source = zephium_import::source(&locations, browser).ok_or(ImportError::Missing)?;
         let listed = source
             .profiles
             .iter()
@@ -503,13 +500,13 @@ fn links(nodes: &[zephium_import::ImportNode]) -> u32 {
 
 async fn write(
     app: &tauri::AppHandle,
-    profile: zephium_core::ids::ProfileId,
+    destination: zephium_app::ImportDestination,
     work: zephium_app::ImportWork,
 ) -> Option<u32> {
     let shell = app.try_state::<Handle>()?.inner().clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     if !shell.dispatch(Command::Import {
-        profile,
+        destination,
         work: Box::new(work),
         done: zephium_app::ImportCompletion::new(move |added| {
             let _ = send.send(added);

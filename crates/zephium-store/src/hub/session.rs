@@ -87,7 +87,11 @@ struct BoundedClosedTab {
 #[serde(deny_unknown_fields)]
 enum BoundedPlacement {
     Favorites {
-        profile: ProfileId,
+        #[serde(default)]
+        space: Option<SpaceId>,
+        /// Only in sessions saved as version 1, which kept one set per profile.
+        #[serde(default)]
+        profile: Option<ProfileId>,
     },
     Space {
         space: SpaceId,
@@ -169,10 +173,77 @@ where
     })
 }
 
-impl From<BoundedSessionState> for SessionState {
-    fn from(value: BoundedSessionState) -> Self {
-        Self {
-            profiles: value
+impl BoundedSessionState {
+    /// `version` is the schema the snapshot was saved under, which decides
+    /// whose Essentials its items name: a space's (2), or a profile's (1).
+    fn into_state(self, version: i64) -> Option<SessionState> {
+        let spaces: Vec<PersistedSpace> = self
+            .spaces
+            .into_iter()
+            .map(|space| PersistedSpace {
+                id: space.id,
+                profile: space.profile,
+                name: space.name,
+                look: space.look,
+            })
+            .collect();
+        let mut homes = HashMap::new();
+        let mut items = Vec::with_capacity(self.items.len());
+        for item in self.items {
+            let placement = match (item.placement, version) {
+                (
+                    BoundedPlacement::Favorites {
+                        space: Some(space),
+                        profile: None,
+                    },
+                    2..,
+                ) => Placement::Favorites { space },
+                (
+                    BoundedPlacement::Favorites {
+                        space: None,
+                        profile: Some(profile),
+                    },
+                    ..=1,
+                ) => {
+                    // A profile without a space has nowhere to keep them.
+                    let Some(home) = essentials::home_space(&spaces, profile, self.active_space)
+                    else {
+                        continue;
+                    };
+                    homes.insert(profile, home);
+                    Placement::Favorites { space: home }
+                }
+                (BoundedPlacement::Favorites { .. }, _) => return None,
+                (BoundedPlacement::Space { space, section }, _) => {
+                    Placement::Space { space, section }
+                }
+            };
+            items.push(PersistedItem {
+                id: item.id,
+                parent: item.parent,
+                placement,
+                kind: match item.kind {
+                    BoundedKind::Folder { name } => PersistedKind::Folder { name },
+                    BoundedKind::Tab {
+                        url,
+                        title,
+                        zoom,
+                        last_active_ms,
+                    } => PersistedKind::Tab {
+                        url,
+                        title,
+                        zoom,
+                        last_active_ms,
+                    },
+                    BoundedKind::BrowserTab { page } => PersistedKind::BrowserTab { page },
+                },
+            });
+        }
+        if !homes.is_empty() {
+            items = essentials::spread(items, &spaces, &homes);
+        }
+        Some(SessionState {
+            profiles: self
                 .profiles
                 .into_iter()
                 .map(|profile| PersistedProfile {
@@ -181,49 +252,12 @@ impl From<BoundedSessionState> for SessionState {
                     kind: profile.kind,
                 })
                 .collect(),
-            spaces: value
-                .spaces
-                .into_iter()
-                .map(|space| PersistedSpace {
-                    id: space.id,
-                    profile: space.profile,
-                    name: space.name,
-                    look: space.look,
-                })
-                .collect(),
-            items: value
-                .items
-                .into_iter()
-                .map(|item| PersistedItem {
-                    id: item.id,
-                    parent: item.parent,
-                    placement: match item.placement {
-                        BoundedPlacement::Favorites { profile } => Placement::Favorites { profile },
-                        BoundedPlacement::Space { space, section } => {
-                            Placement::Space { space, section }
-                        }
-                    },
-                    kind: match item.kind {
-                        BoundedKind::Folder { name } => PersistedKind::Folder { name },
-                        BoundedKind::Tab {
-                            url,
-                            title,
-                            zoom,
-                            last_active_ms,
-                        } => PersistedKind::Tab {
-                            url,
-                            title,
-                            zoom,
-                            last_active_ms,
-                        },
-                        BoundedKind::BrowserTab { page } => PersistedKind::BrowserTab { page },
-                    },
-                })
-                .collect(),
-            active_space: value.active_space,
-            active_item: value.active_item,
-            splits: value.splits.map(|pane| pane.0),
-            recently_closed: value
+            spaces,
+            items,
+            active_space: self.active_space,
+            active_item: self.active_item,
+            splits: self.splits.map(|pane| pane.0),
+            recently_closed: self
                 .recently_closed
                 .into_iter()
                 .map(|entry| PersistedClosedTab {
@@ -237,14 +271,29 @@ impl From<BoundedSessionState> for SessionState {
                     position: None,
                 })
                 .collect(),
-        }
+        })
     }
 }
 
+/// Whether `version` is a schema this build reads, now or by upgrading.
+fn readable_session_version(version: i64) -> bool {
+    (1..=SESSION_SCHEMA_VERSION).contains(&version)
+}
+
 fn decode_authoritative_snapshot(data: &str) -> Option<SessionState> {
+    decode_snapshot(data, SESSION_SCHEMA_VERSION)
+}
+
+fn decode_snapshot(data: &str, version: i64) -> Option<SessionState> {
     bounded_json::from_str::<BoundedSessionState>(data)
-        .ok()
-        .map(SessionState::from)
+        .ok()?
+        .into_state(version)
+}
+
+pub(super) struct SessionBackupSource {
+    version: i64,
+    data: Vec<u8>,
+    canonical: String,
 }
 
 const SESSION_BACKUP_LIFETIME_SECS: i64 = 30 * 24 * 3600;
@@ -258,8 +307,10 @@ pub(super) struct SessionBackupExpiry {
 fn snapshot_names_profile(state: &SessionState, profile: ProfileId) -> bool {
     state.profiles.iter().any(|entry| entry.id == profile)
         || state.spaces.iter().any(|space| space.profile == profile)
-        || state.items.iter().any(|item| matches!(item.placement, Placement::Favorites { profile: owner } if owner == profile))
-        || state.recently_closed.iter().any(|entry| entry.profile == profile)
+        || state
+            .recently_closed
+            .iter()
+            .any(|entry| entry.profile == profile)
 }
 
 /// Unreadable recovery bytes cannot justify retaining a possible copy of
@@ -404,27 +455,24 @@ impl Hub {
         if !self.registry.contains(&profile) || self.recovery_required.is_some() {
             return Err(invalid_data("session backup profile is unavailable"));
         }
-        let replacement = self
-            .pending_session_backup
-            .as_ref()
-            .and_then(|source| {
-                let state = std::str::from_utf8(source)
-                    .ok()
-                    .and_then(decode_authoritative_snapshot)?;
-                snapshot_names_profile(&state, profile)
-                    .then(|| serde_json::to_string(&core_session::canonicalize(state)))
-            })
-            .transpose()
-            .map_err(|_| invalid_data("session backup repair could not be encoded"))?;
+        let replacement = self.pending_session_backup.as_ref().and_then(|source| {
+            let state = decode_authoritative_snapshot(&source.canonical)?;
+            snapshot_names_profile(&state, profile).then(|| source.canonical.clone())
+        });
         let tx = self.meta.transaction()?;
         let removed = discard_profile_backup(&tx, profile)?;
         if let (Some(source), Some(replacement)) = (&self.pending_session_backup, &replacement) {
             // A later load must not turn the just-erased raw source into a
             // pending backup again. Keep the current canonical session.
             if tx.execute(
-                "UPDATE session_snapshot SET data = ?1
+                "UPDATE session_snapshot SET data = ?1, schema_version = ?4
                  WHERE id = 1 AND schema_version = ?2 AND CAST(data AS BLOB) = ?3",
-                params![replacement, SESSION_SCHEMA_VERSION, source],
+                params![
+                    replacement,
+                    source.version,
+                    source.data,
+                    SESSION_SCHEMA_VERSION
+                ],
             )? != 1
             {
                 return Err(invalid_data(
@@ -1505,6 +1553,19 @@ mod qa_settings_recovery_tests {
     }
 
     #[test]
+    fn a_session_kept_for_a_newer_zephium_opens_once_a_build_that_reads_it_is_back() {
+        // An older build met this session, could not read it and kept it;
+        // this build reads it, so it opens as it was.
+        let (dir, expected) = marked_directory(zephium_core::ports::store::NEWER_SESSION_REASON);
+        let mut hub = Hub::open(dir.path().to_path_buf()).unwrap();
+        assert!(hub.recovery_reason().is_none());
+        assert_eq!(
+            hub.load().unwrap().expect("the session is restored"),
+            expected
+        );
+    }
+
+    #[test]
     fn an_unrestorable_session_is_set_aside_and_its_profile_keeps_its_data() {
         let (dir, saved) = marked_directory("corrupt authoritative session snapshot");
         let profile = saved.profiles[0].id;
@@ -1846,7 +1907,7 @@ impl Hub {
             inserted_backup = tx.execute(
                 "INSERT INTO session_snapshot_backup(id, saved_at, schema_version, data)
                  VALUES (1, ?1, ?2, ?3) ON CONFLICT(id) DO NOTHING",
-                params![backup_saved_at, SESSION_SCHEMA_VERSION, source],
+                params![backup_saved_at, source.version, source.data],
             )? == 1;
         }
         if let Some(profile) = authorize_deletion {
@@ -1974,7 +2035,7 @@ impl Hub {
             )
             .optional()?;
         if let Some((version, bytes, data)) = authoritative {
-            if version != SESSION_SCHEMA_VERSION {
+            if !readable_session_version(version) {
                 self.quarantine_authoritative(
                     if version > SESSION_SCHEMA_VERSION {
                         zephium_core::ports::store::NEWER_SESSION_REASON
@@ -1995,7 +2056,7 @@ impl Hub {
                 )?;
                 return Err(invalid_data("session snapshot exceeds persistence limit"));
             };
-            let state = match decode_authoritative_snapshot(&data) {
+            let state = match decode_snapshot(&data, version) {
                 Some(state) => state,
                 None => {
                     self.quarantine_authoritative(
@@ -2017,10 +2078,15 @@ impl Hub {
                 ));
             }
             let canonical = core_session::canonicalize(state.clone());
-            if canonical != state {
+            if canonical != state || version != SESSION_SCHEMA_VERSION {
                 // Restore compatibility repairs immediately, but retain their
                 // exact source until the replacing transaction backs it up.
-                self.pending_session_backup = Some(data.into_bytes());
+                self.pending_session_backup = Some(SessionBackupSource {
+                    version,
+                    data: data.into_bytes(),
+                    canonical: serde_json::to_string(&canonical)
+                        .map_err(|_| invalid_data("session backup repair could not be encoded"))?,
+                });
             }
             return Ok(Some(canonical));
         }
@@ -2110,28 +2176,32 @@ impl Hub {
             let item_budget = MAX_SESSION_ITEMS.saturating_sub(out.items.len());
             self.load_profile(id, &mut out, last == Some(id), space_budget, item_budget)?;
         }
+        // Those files kept one set of Essentials per profile, which the
+        // loader put in the profile's first space; every other space of the
+        // profile gets a copy.
+        let homes: HashMap<ProfileId, SpaceId> = out
+            .profiles
+            .iter()
+            .filter_map(|profile| {
+                Some((
+                    profile.id,
+                    essentials::home_space(&out.spaces, profile.id, None)?,
+                ))
+            })
+            .collect();
+        out.items = essentials::spread(std::mem::take(&mut out.items), &out.spaces, &homes);
         // Legacy profile files store positions per container, while the
-        // authoritative snapshot has one canonical cross-profile container
-        // order: every profile's favorites, then every space's pinned/today
-        // sections. Reorder only whole already-validated containers; do not use
-        // canonicalization itself to drop or repair source rows.
+        // authoritative snapshot has one canonical container order: every
+        // space's Essentials, then its pinned/today sections. Reorder only
+        // whole already-validated containers; do not use canonicalization
+        // itself to drop or repair source rows.
         let mut by_placement: HashMap<Placement, Vec<PersistedItem>> = HashMap::new();
         for item in std::mem::take(&mut out.items) {
             by_placement.entry(item.placement).or_default().push(item);
         }
-        for profile in &out.profiles {
-            if let Some(mut items) = by_placement.remove(&Placement::Favorites {
-                profile: profile.id,
-            }) {
-                out.items.append(&mut items);
-            }
-        }
         for space in &out.spaces {
-            for section in [SpaceSection::Pinned, SpaceSection::Today] {
-                if let Some(mut items) = by_placement.remove(&Placement::Space {
-                    space: space.id,
-                    section,
-                }) {
+            for placement in core_session::space_placements(space.id) {
+                if let Some(mut items) = by_placement.remove(&placement) {
                     out.items.append(&mut items);
                 }
             }
@@ -2154,20 +2224,29 @@ impl Hub {
         self.recovery_required.as_deref()
     }
 
-    /// Earlier builds quarantined snapshots that compatibility restore can
-    /// repair. Lift only this obsolete marker for the exact validated source.
-    pub(super) fn recover_canonical_form_quarantine(&mut self) -> rusqlite::Result<bool> {
-        const REASON: &str = "authoritative session is not in exact canonical form";
-        if self.recovery_required.as_deref() != Some(REASON) {
+    /// Lifts a recovery marker this build can see past, when its preserved
+    /// bytes still equal the current bounded snapshot and decode against the
+    /// registry. Two reasons qualify. Earlier builds put a valid session that
+    /// was not in the then-exact canonical form (an older QA build's Settings
+    /// tab, or rules that tightened later) into recovery; loading restores
+    /// the canonical form and the next save publishes it. And an older build
+    /// keeps a newer build's session for it: once a build that reads the
+    /// session is back, it opens again.
+    pub(super) fn recover_liftable_quarantine(&mut self) -> rusqlite::Result<bool> {
+        const CANONICAL_FORM: &str = "authoritative session is not in exact canonical form";
+        let Some(reason) = self.recovery_required.clone().filter(|reason| {
+            reason == CANONICAL_FORM || reason == zephium_core::ports::store::NEWER_SESSION_REASON
+        }) else {
             return Ok(false);
-        }
+        };
+        let reason = reason.as_str();
         let marker = self
             .meta
             .query_row(
                 "SELECT schema_version,
                         CASE WHEN length(CAST(data AS BLOB)) <= ?1 THEN data END
                  FROM session_recovery WHERE id = 1 AND reason = ?2",
-                params![MAX_SESSION_SNAPSHOT_BYTES as i64, REASON],
+                params![MAX_SESSION_SNAPSHOT_BYTES as i64, reason],
                 |row| {
                     Ok((
                         row.get::<_, Option<i64>>(0)?,
@@ -2179,7 +2258,7 @@ impl Hub {
         let Some((Some(version), Some(marked_bytes))) = marker else {
             return Ok(false);
         };
-        if version != SESSION_SCHEMA_VERSION {
+        if !readable_session_version(version) {
             return Ok(false);
         }
         let snapshot = self
@@ -2198,9 +2277,12 @@ impl Hub {
         if current_version != version || data.as_bytes() != marked_bytes {
             return Ok(false);
         }
-        let Some(state) = decode_authoritative_snapshot(&data) else {
+        let Some(state) = decode_snapshot(&data, version) else {
             return Ok(false);
         };
+        // Loading now restores such a session in today's form, so a
+        // quarantine for this reason alone is lifted once the preserved
+        // bytes still decode and match the registry.
         if self.validate_authoritative_registry(&state).is_err() {
             return Ok(false);
         }
@@ -2211,7 +2293,7 @@ impl Hub {
                    SELECT 1 FROM session_snapshot
                    WHERE id = 1 AND schema_version = ?2 AND CAST(data AS BLOB) = ?3
                )",
-            params![REASON, version, marked_bytes],
+            params![reason, version, marked_bytes],
         )?;
         if removed != 1 {
             return Ok(false);
@@ -2492,5 +2574,285 @@ mod bounded_snapshot_tests {
         assert!(snapshot.len() < MAX_SESSION_SNAPSHOT_BYTES);
         assert!(snapshot.len() > MAX_SESSION_SNAPSHOT_BYTES - 2048);
         assert!(decode_authoritative_snapshot(&snapshot).is_none());
+    }
+}
+
+#[cfg(test)]
+mod essentials_per_space_tests {
+    use super::*;
+
+    const PERSONAL: u128 = 1;
+    const WORK_PROFILE: u128 = 2;
+    const HOME: u128 = 11;
+    const SECOND: u128 = 12;
+    const WORK: u128 = 13;
+
+    fn tab(id: u128, placement: Placement, url: &str) -> PersistedItem {
+        PersistedItem {
+            id: ItemId::from(id),
+            parent: None,
+            placement,
+            kind: PersistedKind::Tab {
+                url: url.into(),
+                title: url.into(),
+                zoom: 1.0,
+                last_active_ms: None,
+            },
+        }
+    }
+
+    fn essentials(space: u128) -> Placement {
+        Placement::Favorites {
+            space: SpaceId::from(space),
+        }
+    }
+
+    /// Two spaces in one profile, one in another, with the kept sites of the
+    /// first profile in its second space and the other's in its only one.
+    fn session(active: u128) -> SessionState {
+        let space = |id, profile| PersistedSpace {
+            id: SpaceId::from(id),
+            profile: ProfileId::from(profile),
+            name: "Space".into(),
+            look: Default::default(),
+        };
+        let profile = |id, name: &str, kind| PersistedProfile {
+            id: ProfileId::from(id),
+            name: name.into(),
+            kind,
+        };
+        SessionState {
+            profiles: vec![
+                profile(PERSONAL, "Personal", ProfileKind::Default),
+                profile(WORK_PROFILE, "Work", ProfileKind::Named),
+            ],
+            spaces: vec![
+                space(HOME, PERSONAL),
+                space(SECOND, PERSONAL),
+                space(WORK, WORK_PROFILE),
+            ],
+            items: vec![
+                tab(
+                    21,
+                    Placement::Space {
+                        space: SpaceId::from(HOME),
+                        section: SpaceSection::Today,
+                    },
+                    "https://open.example/",
+                ),
+                tab(22, essentials(SECOND), "https://mail.example/"),
+                tab(23, essentials(SECOND), "https://chat.example/"),
+                tab(24, essentials(WORK), "https://tickets.example/"),
+            ],
+            active_space: Some(SpaceId::from(active)),
+            active_item: Some(ItemId::from(22)),
+            splits: None,
+            recently_closed: Vec::new(),
+        }
+    }
+
+    /// The same session as version 1 wrote it: each profile's kept sites are
+    /// one set that names the profile.
+    fn as_saved_by_version_one(state: &SessionState) -> String {
+        let mut value = serde_json::to_value(state).unwrap();
+        for item in value["items"].as_array_mut().unwrap() {
+            let Some(favorites) = item["placement"].get_mut("Favorites") else {
+                continue;
+            };
+            let space: SpaceId = serde_json::from_value(favorites["space"].clone()).unwrap();
+            let owner = state.spaces.iter().find(|s| s.id == space).unwrap().profile;
+            *favorites = serde_json::json!({ "profile": owner });
+        }
+        value.to_string()
+    }
+
+    fn rewind(hub: &mut Hub, state: &SessionState) {
+        hub.meta
+            .execute(
+                "UPDATE session_snapshot SET schema_version = 1, data = ?1",
+                [as_saved_by_version_one(state)],
+            )
+            .unwrap();
+    }
+
+    fn urls(state: &SessionState, placement: Placement) -> Vec<String> {
+        state
+            .items
+            .iter()
+            .filter(|item| item.placement == placement)
+            .filter_map(|item| match &item.kind {
+                PersistedKind::Tab { url, .. } => Some(url.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn ids(state: &SessionState, placement: Placement) -> Vec<ItemId> {
+        state
+            .items
+            .iter()
+            .filter(|item| item.placement == placement)
+            .map(|item| item.id)
+            .collect()
+    }
+
+    #[test]
+    fn upgrading_keeps_the_original_bytes_and_schema_once() {
+        let mut hub = Hub::in_memory().unwrap();
+        let state = session(SECOND);
+        hub.save(&state).unwrap();
+        rewind(&mut hub, &state);
+        let source = as_saved_by_version_one(&state).into_bytes();
+        let restored = hub.load().unwrap().unwrap();
+        hub.save(&restored).unwrap();
+        let backup: (i64, Vec<u8>) = hub
+            .meta
+            .query_row(
+                "SELECT schema_version, data FROM session_snapshot_backup WHERE id = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(backup, (1, source));
+        assert_eq!(hub.load().unwrap().unwrap(), restored);
+        hub.save(&restored).unwrap();
+        let count: i64 = hub
+            .meta
+            .query_row("SELECT count(*) FROM session_snapshot_backup", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn clearing_before_upgrade_cannot_recreate_the_old_source_backup() {
+        let mut hub = Hub::in_memory().unwrap();
+        let state = session(SECOND);
+        hub.save(&state).unwrap();
+        rewind(&mut hub, &state);
+        let restored = hub.load().unwrap().unwrap();
+        assert!(hub.pending_session_backup.is_some());
+        hub.discard_session_backup(ProfileId::from(PERSONAL))
+            .unwrap();
+        assert!(hub.pending_session_backup.is_none());
+        assert_eq!(hub.load().unwrap().unwrap(), restored);
+        assert!(hub.pending_session_backup.is_none());
+        hub.save(&restored).unwrap();
+        let count: i64 = hub
+            .meta
+            .query_row("SELECT count(*) FROM session_snapshot_backup", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn each_space_keeps_the_essentials_it_was_given() {
+        let mut hub = Hub::in_memory().unwrap();
+        let state = session(SECOND);
+        hub.save(&state).unwrap();
+
+        let loaded = hub.load().unwrap().unwrap();
+
+        assert_eq!(loaded, state);
+        assert!(urls(&loaded, essentials(HOME)).is_empty());
+        assert_eq!(urls(&loaded, essentials(SECOND)).len(), 2);
+    }
+
+    #[test]
+    fn a_session_saved_with_one_set_per_profile_gets_a_copy_in_every_space() {
+        let mut hub = Hub::in_memory().unwrap();
+        let state = session(SECOND);
+        hub.save(&state).unwrap();
+        rewind(&mut hub, &state);
+
+        let loaded = hub.load().unwrap().unwrap();
+
+        for space in [HOME, SECOND] {
+            assert_eq!(
+                urls(&loaded, essentials(space)),
+                ["https://mail.example/", "https://chat.example/"],
+                "space {space} lost or reordered a kept site"
+            );
+        }
+        assert_eq!(
+            urls(&loaded, essentials(WORK)),
+            ["https://tickets.example/"],
+            "a profile's kept sites reach only its own spaces"
+        );
+        // The space the person was in keeps the originals, so what was in
+        // front stays in front; the copies are new items.
+        assert_eq!(
+            ids(&loaded, essentials(SECOND)),
+            [ItemId::from(22), ItemId::from(23)]
+        );
+        assert_eq!(loaded.active_item, Some(ItemId::from(22)));
+        let mut every: Vec<ItemId> = loaded.items.iter().map(|item| item.id).collect();
+        let count = every.len();
+        every.sort();
+        every.dedup();
+        assert_eq!(every.len(), count, "an item is owned by two spaces");
+        assert_eq!(count, 6);
+    }
+
+    #[test]
+    fn the_originals_go_to_the_profiles_first_space_when_the_person_was_in_another_profile() {
+        let mut hub = Hub::in_memory().unwrap();
+        let mut state = session(WORK);
+        state.active_item = Some(ItemId::from(24));
+        hub.save(&state).unwrap();
+        rewind(&mut hub, &state);
+
+        let loaded = hub.load().unwrap().unwrap();
+
+        assert_eq!(
+            ids(&loaded, essentials(HOME)),
+            [ItemId::from(22), ItemId::from(23)]
+        );
+        assert_eq!(loaded.active_item, Some(ItemId::from(24)));
+    }
+
+    #[test]
+    fn an_upgraded_session_is_saved_in_the_new_schema_and_not_copied_again() {
+        let mut hub = Hub::in_memory().unwrap();
+        let state = session(SECOND);
+        hub.save(&state).unwrap();
+        rewind(&mut hub, &state);
+
+        let upgraded = hub.load().unwrap().unwrap();
+        hub.save(&upgraded).unwrap();
+
+        let version: i64 = hub
+            .meta
+            .query_row("SELECT schema_version FROM session_snapshot", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, SESSION_SCHEMA_VERSION);
+        assert_eq!(hub.load().unwrap().unwrap(), upgraded);
+    }
+
+    #[test]
+    fn a_schema_is_read_only_in_the_form_it_wrote() {
+        let state = session(SECOND);
+        let version_one = as_saved_by_version_one(&state);
+        let version_two = serde_json::to_string(&state).unwrap();
+
+        assert!(decode_snapshot(&version_one, 1).is_some());
+        assert!(decode_snapshot(&version_two, 2).is_some());
+        assert!(decode_snapshot(&version_one, 2).is_none());
+        assert!(decode_snapshot(&version_two, 1).is_none());
+    }
+
+    #[test]
+    fn essentials_naming_both_a_profile_and_a_space_are_not_a_session() {
+        let state = session(SECOND);
+        let mut value = serde_json::to_value(&state).unwrap();
+        value["items"][1]["placement"]["Favorites"]["profile"] =
+            serde_json::json!(ProfileId::from(PERSONAL));
+        assert!(decode_snapshot(&value.to_string(), 2).is_none());
+        assert!(decode_snapshot(&value.to_string(), 1).is_none());
     }
 }

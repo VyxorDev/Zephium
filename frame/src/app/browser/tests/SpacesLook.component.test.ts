@@ -24,6 +24,8 @@ vi.mock("$shared/ipc/bindings", async () => {
   return mockBindings({
     pagePermissionCardHost: async () => {},
     tabsBootstrap: async () => {},
+    sidebarSetHidden: async () => {},
+    sidebarPeek: async () => {},
     sidebarSetWidth: async () => {},
     sidebarResize: async () => false,
     sidebarResizeGuide: async () => true,
@@ -210,7 +212,7 @@ const THREE: ProfilesView = {
 };
 
 afterEach(() => {
-  sidebar.adoptMode("default");
+  sidebar.setMode("default");
   favicons.dispose();
   surface.dispose();
   tabs.dispose();
@@ -245,7 +247,7 @@ type ColumnLook = {
 
 function rail(active = "read") {
   spaced(active);
-  sidebar.adoptMode("compact");
+  sidebar.setMode("compact");
 }
 async function railEditor(screen: Stage) {
   rail();
@@ -400,7 +402,7 @@ for (const theme of ["light", "dark"] as const) {
       await crop(`${theme}-profile-menu-${count}`);
       away();
 
-      sidebar.adoptMode("compact");
+      sidebar.setMode("compact");
       await settle();
       emitNativeEvent("profilesChanged", roster);
       await screen.getByRole("button", { name: /^Tools/ }).click();
@@ -409,14 +411,14 @@ for (const theme of ["light", "dark"] as const) {
       away();
 
       // Back from the rail, the stack opens whole again.
-      sidebar.adoptMode("default");
+      sidebar.setMode("default");
       await settle();
       await screen.getByRole("button", { name: /^Tools/ }).click();
       await settle();
       await crop(`${theme}-profile-after-rail-${count}`);
       away();
       await screen.unmount();
-      sidebar.adoptMode("default");
+      sidebar.setMode("default");
       favicons.dispose();
       surface.dispose();
       tabs.dispose();
