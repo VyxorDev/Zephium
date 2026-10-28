@@ -1541,7 +1541,6 @@ impl InnerWebView {
         &mut token,
         env,
         &pl_attrs,
-        &save_as,
       )?
     };
 
@@ -1681,13 +1680,32 @@ impl InnerWebView {
       // suppressing the dialog so a later HRESULT failure stays fail-closed.
       let webview25 = webview.cast::<ICoreWebView2_25>()?;
       let gate = save_as.clone();
+      let resource_save = attributes
+        .download_policy
+        .inspect_metadata(|| pl_attrs.native_resource_save_handler.clone())
+        .flatten()
+        .filter(|_| {
+          pl_attrs.native_context_menu_handler.is_some()
+            && pl_attrs.native_download_handler.is_some()
+        });
+      let save_owner = controller.clone();
       webview25.add_SaveAsUIShowing(
         &SaveAsUIShowingEventHandler::create(Box::new(move |_, args| {
           if let Some(args) = args {
-            // Only a Save As the browser itself asked for passes.
-            let allowed = gate.as_ref().is_some_and(|gate| gate.get());
-            args.SetCancel(!allowed)?;
-            args.SetSuppressDefaultDialog(!allowed)?;
+            args.SetCancel(true)?;
+            let document = gate.as_ref().is_some_and(|gate| gate.get());
+            let resource = !document
+              && resource_save.as_ref().is_some_and(|handler| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&save_owner)))
+                  .unwrap_or(false)
+              });
+            let allowed = document || resource;
+            // Resource Save As enters DownloadStarting next. The broker owns
+            // its picker and staging path; document Save As has a separate UI.
+            args.SetSuppressDefaultDialog(!document)?;
+            if allowed {
+              args.SetCancel(false)?;
+            }
           }
           Ok(())
         })),
@@ -1800,7 +1818,6 @@ impl InnerWebView {
     token: &mut EventRegistrationToken,
     env: &ICoreWebView2Environment,
     pl_attrs: &super::PlatformSpecificWebViewAttributes,
-    save_as: &Option<Rc<Cell<bool>>>,
   ) -> Result<()> {
     // Page `window.close()` is only a request. The secure default deliberately
     // keeps the child HWND alive so an embedder cannot retain a logical view
@@ -2197,21 +2214,6 @@ impl InnerWebView {
     Self::attach_main_thread_dispatcher(hwnd)?;
 
     if let Some(handler) = pl_attrs.native_context_menu_handler.clone() {
-      // Save-page/SaveAs is distinct from DownloadStarting. Keep that separate
-      // filesystem surface denied even when selected download/edit menu items
-      // are enabled. Registration is mandatory before any content can load.
-      let core25: ICoreWebView2_25 = webview.cast()?;
-      let gate = save_as.clone();
-      core25.add_SaveAsUIShowing(
-        &SaveAsUIShowingEventHandler::create(Box::new(move |_, args| {
-          if let Some(args) = args {
-            let allowed = gate.as_ref().is_some_and(|gate| gate.get());
-            args.SetCancel(!allowed)?;
-          }
-          Ok(())
-        })),
-        token,
-      )?;
       let owner = controller.clone();
       let core11: ICoreWebView2_11 = webview.cast()?;
       core11.add_ContextMenuRequested(

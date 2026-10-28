@@ -1650,9 +1650,9 @@ impl Drop for RuntimeLifecycle {
         // that worker, but this remains Unclean: only a later controller can
         // establish the native-zero audit proof required to claim a clean
         // browser shutdown.
-        self.inner
-            .request_cooperative_shutdown_until(Instant::now());
         if let Some(worker) = self.worker.take() {
+            self.inner
+                .request_cooperative_shutdown_until(Instant::now());
             schedule_reap(worker);
         }
     }
@@ -1859,6 +1859,7 @@ async fn worker_loop(
         }
     }
     drop(browser);
+    gate.stop();
     #[cfg(test)]
     WORKER_EXIT_GATE.wait();
     inner.completion.mark_stopped();
@@ -2508,6 +2509,7 @@ mod tests {
         active: mpsc::Sender<()>,
         shutdown: mpsc::Sender<PolicyDrainReport>,
         reconciled: mpsc::Sender<()>,
+        published: oneshot::Receiver<()>,
     }
 
     struct PolicyDrainReport {
@@ -2529,6 +2531,7 @@ mod tests {
                 active: active_sender,
                 shutdown: shutdown_sender,
                 reconciled: reconciled_sender,
+                published,
             } = *self;
             Box::pin(async move {
                 let mut active = false;
@@ -2563,6 +2566,7 @@ mod tests {
                             ContextNativeEvent::ResourceAuditSettled(_),
                         )) if active && shutdown => {
                             let _ = reconciled_sender.send(());
+                            let _ = published.await;
                             return;
                         }
                         Ok(_) | Err(_) => return,
@@ -3435,6 +3439,7 @@ mod tests {
         let (active_sender, active_receiver) = mpsc::channel();
         let (shutdown_sender, shutdown_receiver) = mpsc::channel();
         let (reconciled_sender, reconciled_receiver) = mpsc::channel();
+        let (published_sender, published_receiver) = oneshot::channel();
         let (policy, active_call) = active_model_call_for_shutdown_test();
         let pending = spawn_suspended_with_controller(
             AgentRuntimeConfig::STANDARD,
@@ -3444,6 +3449,7 @@ mod tests {
                 active: active_sender,
                 shutdown: shutdown_sender,
                 reconciled: reconciled_sender,
+                published: published_receiver,
             }),
         )
         .expect("controller worker starts");
@@ -3464,10 +3470,11 @@ mod tests {
                 .expect("controller settles active call on lifecycle shutdown");
             let audit =
                 ContextResourceAuditId::new(1).expect("reconciliation audit identity is nonzero");
-            sink.publish(ContextNativeEvent::ResourceAuditSettled(
+            let published = sink.publish(ContextNativeEvent::ResourceAuditSettled(
                 ContextResourceAuditSettlement::new(audit, Err(ContextPortFailure::Shutdown)),
-            ))
-            .map(|()| report)
+            ));
+            let _ = published_sender.send(());
+            published.map(|()| report)
         });
         let outcome = lifecycle.shutdown_until(Instant::now() + Duration::from_secs(1));
         assert!(matches!(outcome, AgentBrowserShutdownOutcome::Unclean));
@@ -3570,6 +3577,18 @@ mod tests {
         ));
         let next = spawn_after_true_worker_exit();
         drop(next);
+    }
+
+    #[test]
+    fn dropping_a_reaped_lifecycle_preserves_its_published_deadline() {
+        let inner = controller_test_inner();
+        let deadline = Instant::now() + Duration::from_secs(1);
+        inner.request_cooperative_shutdown_until(deadline);
+        drop(RuntimeLifecycle {
+            inner: Arc::clone(&inner),
+            worker: None,
+        });
+        assert_eq!(inner.shutdown_deadline(), Some(deadline));
     }
 
     #[test]
@@ -3853,6 +3872,14 @@ mod tests {
     #[test]
     fn lifecycle_shutdown_forcibly_drops_noncooperative_controller() {
         let _guard = runtime_test_guard();
+        struct ReleasePostCompletion;
+        impl Drop for ReleasePostCompletion {
+            fn drop(&mut self) {
+                WORKER_POST_COMPLETION_GATE.release();
+            }
+        }
+        WORKER_POST_COMPLETION_GATE.hold();
+        let post_completion = ReleasePostCompletion;
         let worker_exit_gate = HeldWorkerExitGate::enable();
         let (started_sender, started_receiver) = mpsc::channel();
         let pending = spawn_suspended_with_controller(
@@ -3892,6 +3919,7 @@ mod tests {
             Some(AgentRuntimeMailboxFault::Closed)
         );
         assert!(weak_port.upgrade().is_none());
+        drop(post_completion);
         let next = spawn_after_true_worker_exit();
         drop(next);
     }
