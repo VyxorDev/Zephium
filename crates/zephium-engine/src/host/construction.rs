@@ -1467,6 +1467,8 @@ impl EngineHost {
             if let Some(environment) = cached_environment {
                 builder = builder.with_environment(environment);
             }
+            builder = builder
+                .with_controller_initialization_hook(|_, core| crate::reputation::configure(core));
             if let Some(startup) = extension_startup {
                 builder = builder.with_browser_extension_startup_gate(move |environment, core| {
                     startup.authenticate(environment, core)
@@ -2821,6 +2823,8 @@ impl EngineHost {
             } else {
                 builder
             };
+            let builder = builder
+                .with_controller_initialization_hook(|_, core| crate::reputation::configure(core));
             if let Some(startup) = startup {
                 builder.with_browser_extension_startup_gate(move |environment, core| {
                     startup.authenticate(environment, core)
