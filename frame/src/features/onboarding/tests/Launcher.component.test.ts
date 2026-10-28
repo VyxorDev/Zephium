@@ -75,3 +75,28 @@ test("does not advertise an unbound page shortcut", async () => {
     .element(screen.getByText("For a page’s address in Zephium."))
     .not.toBeInTheDocument();
 });
+
+test("highlights the pressed page-address keys in their displayed order", async () => {
+  native.location = "CmdOrCtrl+Alt+L";
+  const screen = await render(Launcher);
+  const keys = screen.getByLabelText(acceleratorKeys(native.location, IS_MAC).join(" "), {
+    exact: true,
+  });
+  await expect.element(keys).toBeVisible();
+  window.dispatchEvent(
+    new KeyboardEvent("keydown", {
+      code: "KeyL",
+      metaKey: IS_MAC,
+      ctrlKey: !IS_MAC,
+    }),
+  );
+  await expect.element(keys.getByText("L", { exact: true })).toHaveAttribute("data-down", "true");
+  await expect
+    .element(keys.getByText(IS_MAC ? "⌘" : "Ctrl", { exact: true }))
+    .toHaveAttribute("data-down", "true");
+  await expect
+    .element(keys.getByText(IS_MAC ? "⌥" : "Alt", { exact: true }))
+    .toHaveAttribute("data-down", "false");
+  window.dispatchEvent(new KeyboardEvent("keyup", { code: "KeyL" }));
+  await expect.element(keys.getByText("L", { exact: true })).toHaveAttribute("data-down", "false");
+});
