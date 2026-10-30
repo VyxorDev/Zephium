@@ -34,7 +34,7 @@ pub fn search_query(input: &str) -> Option<Url> {
     if value.is_empty() || looks_like_local_path(value) {
         return None;
     }
-    if value.contains("://") || Url::parse(value).is_ok() {
+    if has_leading_scheme_separator(value) || Url::parse(value).is_ok() {
         let parsed = Url::parse(value).ok()?;
         if !is_allowed(&parsed) {
             return None;
@@ -67,9 +67,10 @@ fn classify_input(s: &str) -> InputKind {
     // A syntactically absolute input expresses an intent to navigate, not to
     // search. This includes schemes without `//` such as file:, data: and
     // javascript:. Reject every disallowed absolute URL without exfiltrating
-    // its original text to SEARCH_BASE. A malformed `scheme://` is treated the
-    // same way because it may still contain credentials or a local path.
-    if s.contains("://") || Url::parse(s).is_ok() {
+    // its original text to SEARCH_BASE. A malformed leading `scheme://` is
+    // treated the same way because it may still contain credentials or a local
+    // path; a URL embedded later in prose remains ordinary search text.
+    if has_leading_scheme_separator(s) || Url::parse(s).is_ok() {
         return Url::parse(s)
             .ok()
             .filter(is_browser_target)
@@ -85,6 +86,20 @@ fn search_url(value: &str) -> Option<Url> {
     // Percent-encoding can expand an otherwise bounded input. Apply the
     // native URL ceiling to the final request.
     is_allowed(&url).then_some(url)
+}
+
+/// A malformed absolute URL can fail `Url::parse` but still be target-shaped.
+/// Only a valid scheme at the start counts; `compare https://example.com` is
+/// prose and can safely remain a search query.
+fn has_leading_scheme_separator(value: &str) -> bool {
+    let Some((scheme, _)) = value.split_once("://") else {
+        return false;
+    };
+    let mut bytes = scheme.bytes();
+    matches!(bytes.next(), Some(first) if first.is_ascii_alphabetic())
+        && bytes.all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.')
+        })
 }
 
 fn looks_like_local_path(s: &str) -> bool {
@@ -427,6 +442,18 @@ mod tests {
     }
 
     #[test]
+    fn search_text_may_contain_web_urls() {
+        let query = "compare https://example.com/a?x=1 with https://example.org/b#two";
+        assert!(is_query(query));
+        let u = classify(query).expect("embedded URLs are search text");
+        assert_eq!(u.host_str(), Some("duckduckgo.com"));
+        assert!(u
+            .query_pairs()
+            .any(|(key, value)| key == "q" && value == query));
+        assert!(search_query(query).is_some());
+    }
+
+    #[test]
     fn explicit_search_never_turns_host_shaped_text_into_navigation() {
         assert_eq!(
             search_query("example.com").unwrap().as_str(),
@@ -434,6 +461,7 @@ mod tests {
         );
         assert!(search_query("https://user:secret@example.com/").is_none());
         assert!(search_query("file:///private.txt").is_none());
+        assert!(search_query("https://").is_none());
         assert!(search_query("/Users/alice/private.txt").is_none());
     }
 
